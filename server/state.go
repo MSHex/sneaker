@@ -84,6 +84,12 @@ func (obj *StateObject) update(ts int64, sourceObj *tacview.Object, coordBase [2
 	if sourceObj.Deleted {
 		obj.Deleted = true
 	} else {
+		if obj.Deleted {
+			// Tacview re-used the id of an object removed since the last
+			// radar sweep; treat it as a new contact.
+			obj.Deleted = false
+			obj.CreatedAt = ts
+		}
 		for _, prop := range sourceObj.Properties {
 			if prop.Key == "T" {
 				err := obj.updateLocation(prop.Value, coordBase)
@@ -115,53 +121,73 @@ type sessionState struct {
 
 	offset int64
 	active bool
+
+	// Incremented for every new Tacview connection
+	generation uint64
 }
 
-// Called when our connection is interrupted
-func (s *sessionState) reset() {
+// Called when our connection is interrupted. Returns the ids of the objects
+// that were being tracked.
+func (s *sessionState) reset() []uint64 {
 	s.Lock()
 	defer s.Unlock()
+	return s.resetLocked()
+}
+
+func (s *sessionState) resetLocked() []uint64 {
+	removed := make([]uint64, 0, len(s.objects))
+	for id := range s.objects {
+		removed = append(removed, id)
+	}
 	s.objects = make(map[uint64]*StateObject)
 	s.active = false
+	s.offset = 0
+	return removed
 }
 
-// Called when the tacview stream starts
-func (s *sessionState) initialize(header *tacview.Header) error {
-	s.reset()
-
+// Called when the tacview stream starts. Returns a snapshot of the objects
+// in the initial time frame and the session id.
+func (s *sessionState) initialize(header *tacview.Header) ([]*StateObject, string, error) {
 	s.Lock()
 	defer s.Unlock()
+	s.resetLocked()
+
 	globalObj := header.InitialTimeFrame.Get(0)
 	if globalObj == nil {
-		return errors.New("TacView initial time frame is missing global object")
+		return nil, "", errors.New("TacView initial time frame is missing global object")
 	}
 
-	sessionId := globalObj.Get("RecordingTime")
-	if sessionId != nil {
+	s.sessionId = ""
+	if sessionId := globalObj.Get("RecordingTime"); sessionId != nil {
 		s.sessionId = sessionId.Value
 	}
 
 	refLat := globalObj.Get("ReferenceLatitude")
 	refLng := globalObj.Get("ReferenceLongitude")
 
+	s.coordBase = [2]float64{0.0, 0.0}
 	if refLat != nil && refLng != nil {
 		refLatF, err := strconv.ParseFloat(refLat.Value, 64)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		refLngF, err := strconv.ParseFloat(refLng.Value, 64)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 
 		s.coordBase = [2]float64{refLatF, refLngF}
-	} else {
-		s.coordBase = [2]float64{0.0, 0.0}
 	}
 
+	s.generation++
 	s.active = true
 	s.update(&header.InitialTimeFrame)
-	return nil
+
+	objects := make([]*StateObject, 0, len(s.objects))
+	for _, object := range s.objects {
+		objects = append(objects, object)
+	}
+	return objects, s.sessionId, nil
 }
 
 func (s *sessionState) update(tf *tacview.TimeFrame) {
@@ -169,7 +195,7 @@ func (s *sessionState) update(tf *tacview.TimeFrame) {
 	for _, object := range tf.Objects {
 		if _, exists := s.objects[object.Id]; exists {
 			s.objects[object.Id].update(int64(tf.Offset), object, s.coordBase)
-		} else {
+		} else if !object.Deleted {
 			stateObj, err := NewStateObject(int64(tf.Offset), object, s.coordBase)
 			if err != nil {
 				log.Printf("Error processing object: %v", err)

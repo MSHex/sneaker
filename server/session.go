@@ -43,25 +43,31 @@ type PlayerMetadata struct {
 func (s *serverSession) GetPlayerList() []PlayerMetadata {
 	players := []PlayerMetadata{}
 	s.state.RLock()
-	for _, object := range s.state.objects {
-		isPlayer := false
+	defer s.state.RUnlock()
 
+	for _, object := range s.state.objects {
+		if object.Deleted {
+			continue
+		}
+
+		isAir := false
 		for _, typeName := range object.Types {
 			if typeName == "Air" {
-				isPlayer = true
-				continue
+				isAir = true
+				break
 			}
 		}
-		if !isPlayer {
+		if !isAir {
 			continue
 		}
 
 		pilotName, ok := object.Properties["Pilot"]
-		if !ok {
+		if !ok || pilotName == "" {
 			continue
 		}
 
-		if strings.HasPrefix(pilotName, object.Properties["Group"]) {
+		// AI pilots are named after their group
+		if group := object.Properties["Group"]; group != "" && strings.HasPrefix(pilotName, group) {
 			continue
 		}
 
@@ -70,26 +76,42 @@ func (s *serverSession) GetPlayerList() []PlayerMetadata {
 			Type: object.Properties["Name"],
 		})
 	}
-	s.state.RUnlock()
 	return players
+}
+
+func encodeEvent(event string, data interface{}) ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"e": event,
+		"d": data,
+	})
 }
 
 func (s *serverSession) updateLoop() {
 	refreshRate := time.Duration(5)
-	if s.server.RadarRefreshRate != 0 {
+	if s.server.RadarRefreshRate > 0 {
 		refreshRate = time.Duration(s.server.RadarRefreshRate)
 	}
 	ticker := time.NewTicker(time.Second * refreshRate)
+	defer ticker.Stop()
 
 	var currentOffset int64
-	for {
-		<-ticker.C
-
+	var currentGeneration uint64
+	for range ticker.C {
+		s.state.Lock()
 		if !s.state.active {
+			s.state.Unlock()
 			continue
 		}
 
-		s.state.Lock()
+		// A new Tacview connection (mission restart / server restart) starts
+		// the offsets again at zero. Without this reset nothing would be sent
+		// as created/updated until the new mission time passed the old one,
+		// which looked like a frozen radar after every mission change.
+		if s.state.generation != currentGeneration {
+			currentGeneration = s.state.generation
+			currentOffset = -1
+		}
+
 		data := &sessionRadarSnapshotData{
 			Offset:  s.state.offset,
 			Created: make([]*StateObject, 0),
@@ -97,9 +119,10 @@ func (s *serverSession) updateLoop() {
 			Deleted: make([]uint64, 0),
 		}
 
-		for _, object := range s.state.objects {
+		for id, object := range s.state.objects {
 			if object.Deleted {
-				data.Deleted = append(data.Deleted, object.Id)
+				data.Deleted = append(data.Deleted, id)
+				delete(s.state.objects, id)
 			} else if object.CreatedAt > currentOffset {
 				data.Created = append(data.Created, object)
 			} else if object.UpdatedAt > currentOffset {
@@ -107,111 +130,157 @@ func (s *serverSession) updateLoop() {
 			}
 		}
 
-		// We can now delete these objects from the state
-		for _, objectId := range data.Deleted {
-			delete(s.state.objects, objectId)
-		}
-
 		currentOffset = s.state.offset
+
+		// Encode while still holding the lock: the objects are mutated by the
+		// Tacview reader goroutine, and marshalling their property maps
+		// concurrently is a fatal "concurrent map read and map write" crash.
+		encoded, err := encodeEvent("SESSION_RADAR_SNAPSHOT", data)
 		s.state.Unlock()
 
-		s.publish("SESSION_RADAR_SNAPSHOT", data)
+		if err != nil {
+			log.Printf("[session:%v] failed to encode radar snapshot: %v", s.server.Name, err)
+			continue
+		}
+		s.publishEncoded(encoded)
 	}
 }
 
-func (s *serverSession) getInitialState() (*sessionStateData, []*StateObject) {
+// getInitialState returns the pre-encoded SESSION_STATE and
+// SESSION_RADAR_SNAPSHOT events for a new subscriber, or nil if no Tacview
+// session is active.
+func (s *serverSession) getInitialState() [][]byte {
 	s.state.RLock()
 	defer s.state.RUnlock()
 
 	if !s.state.active {
-		return nil, nil
+		return nil
 	}
 
-	objects := make([]*StateObject, len(s.state.objects))
-
-	idx := 0
+	objects := make([]*StateObject, 0, len(s.state.objects))
 	for _, object := range s.state.objects {
-		objects[idx] = object
-		idx += 1
+		if !object.Deleted {
+			objects = append(objects, object)
+		}
 	}
 
-	return &sessionStateData{
+	stateEvent, err := encodeEvent("SESSION_STATE", &sessionStateData{
 		SessionId: s.state.sessionId,
 		Offset:    s.state.offset,
-	}, objects
-}
-
-func (s *serverSession) publish(event string, data interface{}) error {
-	encoded, err := json.Marshal(map[string]interface{}{
-		"e": event,
-		"d": data,
 	})
 	if err != nil {
-		return err
+		return nil
 	}
+	snapshotEvent, err := encodeEvent("SESSION_RADAR_SNAPSHOT", &sessionRadarSnapshotData{
+		Offset:  s.state.offset,
+		Created: objects,
+		Updated: []*StateObject{},
+		Deleted: []uint64{},
+	})
+	if err != nil {
+		return nil
+	}
+	return [][]byte{stateEvent, snapshotEvent}
+}
 
+func (s *serverSession) publishEncoded(encoded []byte) {
 	s.Lock()
+	defer s.Unlock()
 	for id, sub := range s.subscribers {
 		select {
 		case sub <- encoded:
-			continue
 		default:
 			log.Printf("[session:%v] subscriber %v non-responsive, closing", s.server.Name, id)
 			delete(s.subscribers, id)
 			close(sub)
 		}
 	}
-	s.Unlock()
-	return nil
-
 }
 
 func (s *serverSession) run() {
 	go s.updateLoop()
 
+	backoff := 5 * time.Second
+	lastError := ""
 	for {
-		s.runTacViewClient()
-		time.Sleep(time.Second * 5)
+		started := time.Now()
+		err := s.runTacViewClient()
+
+		// Connection is gone: clear the stale picture so clients do not keep
+		// showing frozen tracks from a mission that has ended.
+		if removed := s.state.reset(); len(removed) > 0 {
+			// Remove the tracks but keep the global object (id 0), so the map
+			// and any drawings stay up while DCS loads the next mission.
+			deleted := make([]uint64, 0, len(removed))
+			for _, id := range removed {
+				if id != 0 {
+					deleted = append(deleted, id)
+				}
+			}
+			if encoded, encErr := encodeEvent("SESSION_RADAR_SNAPSHOT", &sessionRadarSnapshotData{
+				Created: []*StateObject{},
+				Updated: []*StateObject{},
+				Deleted: deleted,
+			}); encErr == nil {
+				s.publishEncoded(encoded)
+			}
+		}
+
+		if err != nil {
+			// DCS being down between missions is normal; only log when the
+			// reason changes so the DCSServerBot console is not flooded.
+			if msg := err.Error(); msg != lastError {
+				log.Printf("[session:%v] tacview connection to %v:%v unavailable: %v",
+					s.server.Name, normalizeDialHost(s.server.Hostname), s.server.Port, err)
+				lastError = msg
+			}
+		} else {
+			lastError = ""
+		}
+
+		if time.Since(started) > time.Minute {
+			backoff = 5 * time.Second
+		}
+		time.Sleep(backoff)
+		if backoff < 30*time.Second {
+			backoff += 5 * time.Second
+		}
 	}
 }
 
 func (s *serverSession) runTacViewClient() error {
-	client := NewTacViewClient(s.server.Hostname, s.server.Port, s.server.Password)
-	header, timeFrameStream, err := client.Start()
+	client := NewTacViewClient(s.server.Hostname, s.server.Port, s.server.Password, "sneaker")
+	header, timeFrameStream, closeConn, streamErr, err := client.Start()
+	if err != nil {
+		return err
+	}
+	defer closeConn()
+
+	objects, sessionId, err := s.state.initialize(header)
 	if err != nil {
 		return err
 	}
 
-	err = s.state.initialize(header)
-	if err != nil {
-		return err
-	}
+	log.Printf("[session:%v] tacview client session initialized (%v objects)", s.server.Name, len(objects))
 
-	s.state.Lock()
-	objects := make([]*StateObject, len(s.state.objects))
-	var idx = 0
-	for _, object := range s.state.objects {
-		objects[idx] = object
-		idx += 1
-	}
-	s.state.Unlock()
-
-	log.Printf("[session:%v] tacview client session initialized", s.server.Name)
-	s.publish("SESSION_STATE", &sessionStateData{
-		SessionId: s.state.sessionId,
+	s.state.RLock()
+	encoded, err := encodeEvent("SESSION_STATE", &sessionStateData{
+		SessionId: sessionId,
 		Objects:   objects,
 	})
+	s.state.RUnlock()
+	if err == nil {
+		s.publishEncoded(encoded)
+	}
 
-	for {
-		timeFrame, ok := <-timeFrameStream
-		if !ok {
-			return nil
-		}
-
+	for timeFrame := range timeFrameStream {
 		s.state.Lock()
 		s.state.update(timeFrame)
 		s.state.Unlock()
 	}
+
+	log.Printf("[session:%v] tacview stream ended: %v", s.server.Name, *streamErr)
+	return nil
 }
 
 func (s *serverSession) removeSub(id int) {
@@ -221,7 +290,7 @@ func (s *serverSession) removeSub(id int) {
 }
 
 func (s *serverSession) addSub() (<-chan []byte, func()) {
-	sub := make(chan []byte, 16)
+	sub := make(chan []byte, 64)
 	s.Lock()
 	id := s.subscriberIdx
 	s.subscribers[id] = sub

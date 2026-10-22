@@ -1,10 +1,10 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -86,7 +86,7 @@ func getGroundUnitModes(config *TacViewServerConfig) []string {
 }
 
 func (h *httpServer) ensureServer(w http.ResponseWriter, r *http.Request) *TacViewServerConfig {
-	serverName := chi.URLParam(r, "serverName")
+	serverName := serverNameParam(r)
 
 	var server *TacViewServerConfig
 	for _, checkServer := range h.config.Servers {
@@ -116,6 +116,17 @@ func (h *httpServer) getServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	gores.JSON(w, 200, h.getServerMetadata(server))
+}
+
+// serverNameParam returns the decoded server name from the URL. DCS server
+// names (which DCSServerBot uses as sneaker server names) often contain
+// characters such as "#", "|" or spaces that arrive percent-encoded.
+func serverNameParam(r *http.Request) string {
+	raw := chi.URLParam(r, "serverName")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
 }
 
 var errNoServerFound = errors.New("no server by that name was found")
@@ -152,7 +163,7 @@ func (h *httpServer) getOrCreateSession(serverName string) (*serverSession, erro
 
 // Streams events for a given server
 func (h *httpServer) streamServerEvents(w http.ResponseWriter, r *http.Request) {
-	session, err := h.getOrCreateSession(chi.URLParam(r, "serverName"))
+	session, err := h.getOrCreateSession(serverNameParam(r))
 	if err != nil {
 		if err == errNoServerFound {
 			gores.Error(w, 404, "server not found")
@@ -163,73 +174,64 @@ func (h *httpServer) streamServerEvents(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sub, subCloser := session.addSub()
-	defer subCloser()
-
 	f, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
 	}
 
+	sub, subCloser := session.addSub()
+	defer subCloser()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Transfer-Encoding", "chunked")
+	// Stop reverse proxies (nginx / Nginx Proxy Manager) from buffering the stream
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
-	publish := func(event string, data interface{}) {
-		encoded, err := json.Marshal(map[string]interface{}{
-			"e": event,
-			"d": data,
-		})
-		if err != nil {
-			return
-		}
-
-		outgoing := []byte("data: ")
-		outgoing = append(outgoing, encoded...)
+	write := func(msg []byte) error {
+		outgoing := make([]byte, 0, len(msg)+8)
+		outgoing = append(outgoing, "data: "...)
+		outgoing = append(outgoing, msg...)
 		outgoing = append(outgoing, '\n', '\n')
-		w.Write(outgoing)
+		if _, err := w.Write(outgoing); err != nil {
+			return err
+		}
 		f.Flush()
+		return nil
 	}
 
 	// Send initial data
-	initialStateData, objects := session.getInitialState()
-	if initialStateData != nil {
-		publish("SESSION_STATE", initialStateData)
-
-		publish("SESSION_RADAR_SNAPSHOT", &sessionRadarSnapshotData{
-			Offset:  initialStateData.Offset,
-			Created: objects,
-			Updated: []*StateObject{},
-			Deleted: []uint64{},
-		})
+	for _, msg := range session.getInitialState() {
+		if write(msg) != nil {
+			return
+		}
 	}
+	f.Flush()
 
-	done := make(chan struct{})
-	notify := w.(middleware.WrapResponseWriter).Unwrap().(http.CloseNotifier).CloseNotify()
-	go func() {
-		<-notify
-		close(done)
-		log.Printf("Connection closed")
-	}()
+	// Periodic comment keeps idle connections (and proxies) alive
+	keepAlive := time.NewTicker(15 * time.Second)
+	defer keepAlive.Stop()
 
+	ctx := r.Context()
 	for {
 		select {
 		case msg, ok := <-sub:
 			if !ok {
 				return
 			}
-
-			outgoing := []byte("data: ")
-			outgoing = append(outgoing, msg...)
-			outgoing = append(outgoing, '\n', '\n')
-			w.Write(outgoing)
+			if write(msg) != nil {
+				return
+			}
+		case <-keepAlive.C:
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
 			f.Flush()
-		case <-done:
+		case <-ctx.Done():
 			return
 		}
-
 	}
 }
 
@@ -269,5 +271,11 @@ func Run(config *Config) error {
 		server.getOrCreateSession(serverConfig.Name)
 	}
 
-	return http.ListenAndServe(config.Bind, r)
+	log.Printf("Sneaker web UI listening on http://%v", config.Bind)
+	httpServer := &http.Server{
+		Addr:              config.Bind,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return httpServer.ListenAndServe()
 }
