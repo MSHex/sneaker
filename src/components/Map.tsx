@@ -664,11 +664,19 @@ export function Map({ dcsMap }: { dcsMap: DCSMap }) {
       zoom: 8,
       seamlessZoom: true,
       fpsOnInteracting: 60,
-      attribution: null,
+      attribution: {
+        content: serverStore.getState().server?.map_tile_url
+          ? ""
+          : "Tiles &copy; Esri &mdash; Esri, HERE, Garmin, OpenStreetMap contributors",
+      },
       baseLayer: new maptalks.TileLayer("base", {
+        // CARTO's basemaps now require an API key; Esri's dark gray canvas
+        // does not. Override with "map_tile_url" in sneaker.json.
         urlTemplate:
-          "https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_nolabels/{z}/{x}/{y}.png",
+          serverStore.getState().server?.map_tile_url ||
+          "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
         subdomains: ["a", "b", "c"],
+        maxAvailableZoom: 16,
         maxCacheSize: 2048,
         hitDetect: false,
       }),

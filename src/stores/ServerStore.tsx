@@ -9,6 +9,8 @@ import { createTracks, updateTracks } from "./TrackStore";
 export type Server = {
   name: string;
   ground_unit_modes: Array<GroundUnitMode>;
+  // Optional basemap tile URL template from sneaker.json ("map_tile_url")
+  map_tile_url?: string;
 };
 
 // const worker = new Worker(new URL("../worker.ts", import.meta.url));

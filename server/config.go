@@ -5,6 +5,8 @@ type Config struct {
 	Servers    []TacViewServerConfig     `json:"servers"`
 	AssetsPath *string                   `json:"assets_path"`
 	Discord    *DiscordIntegrationConfig `json:"discord"`
+	// Optional basemap tile URL template ({z}/{x}/{y}), e.g. a keyed CARTO URL
+	MapTileURL string `json:"map_tile_url"`
 }
 
 type DiscordIntegrationConfig struct {

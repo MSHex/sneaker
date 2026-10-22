@@ -33,6 +33,7 @@ func (h *httpServer) getServerMetadata(server *TacViewServerConfig) serverMetada
 	result := serverMetadata{
 		Name:            server.Name,
 		GroundUnitModes: getGroundUnitModes(server),
+		MapTileURL:      h.config.MapTileURL,
 		GCIs:            []gciMetadata{},
 	}
 
@@ -75,6 +76,7 @@ type serverMetadata struct {
 	Players         []PlayerMetadata `json:"players"`
 	GCIs            []gciMetadata    `json:"gcis"`
 	TacView         *TacViewStatus   `json:"tacview,omitempty"`
+	MapTileURL      string           `json:"map_tile_url,omitempty"`
 }
 
 func getGroundUnitModes(config *TacViewServerConfig) []string {
