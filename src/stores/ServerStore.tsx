@@ -48,7 +48,7 @@ function runSneakerClient(server: Server | null) {
   if (server !== null) {
     setTimeout(() => {
       sneakerClient = new SneakerClient(
-        route(`/servers/${server.name}/events`)
+        route(`/servers/${encodeURIComponent(server.name)}/events`)
       );
       sneakerClient?.run((event) => {
         if (event.e === "SESSION_STATE") {

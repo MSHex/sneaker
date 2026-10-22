@@ -9,6 +9,8 @@ module.exports = {
     filename: "[name].[contenthash].js",
     path: path.resolve(__dirname, "dist"),
     publicPath: "/static/",
+    // md4 (webpack's default) is not available in Node 17+ (OpenSSL 3)
+    hashFunction: "xxhash64",
   },
   resolve: {
     extensions: [".tsx", ".ts", ".js"],

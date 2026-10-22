@@ -16,6 +16,8 @@ import { TheChannel } from "./dcs/maps/TheChannel";
 import { Nevada } from "./dcs/maps/Nevada";
 import { Kola } from "./dcs/maps/Kola";
 import { Afghanistan } from "./dcs/maps/Afghanistan";
+import { Iraq } from "./dcs/maps/Iraq";
+import { GermanyCW } from "./dcs/maps/GermanyCW";
 import { Server, serverStore } from "./stores/ServerStore";
 import { route } from "./util";
 
@@ -27,7 +29,7 @@ type ServerMetadata = {
 function ServerOption({ server }: { server: ServerMetadata }) {
   return (
     <Link
-      to={`/servers/${server.name}`}
+      to={`/servers/${encodeURIComponent(server.name)}`}
       className="p-2 bg-gray-100 hover:bg-gray-200 border-gray-400 border rounded-sm shadow-sm w-full items-center flex flex-row"
     >
       <span className="text-3xl font-bold flex-grow">{server.name} </span>
@@ -85,6 +87,16 @@ function ServerConnectModal() {
   );
 }
 
+// DCS server names often contain "#", "|" or spaces, so they are
+// percent-encoded in URLs.
+function decodeServerName(name: string): string {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
 function ServerContainer({ serverName }: { serverName: string }) {
   const [refLat, refLng] = serverStore((state) => {
     const globalObj = state.entities.get(0);
@@ -101,7 +113,7 @@ function ServerContainer({ serverName }: { serverName: string }) {
     loading,
     error,
   } = useFetch<Server>(
-    route(`/servers/${serverName}`),
+    route(`/servers/${encodeURIComponent(serverName)}`),
     { cachePolicy: CachePolicies.NO_CACHE },
     [serverName]
   );
@@ -125,34 +137,46 @@ function ServerContainer({ serverName }: { serverName: string }) {
     );
   }
 
-  if (loading || !refLat || !refLng) {
+  if (loading || refLat === undefined || refLng === undefined) {
     return (
       <BiLoader className="h-6 w-6 text-blue-400 animate-spin my-auto mx-auto" />
     );
   }
 
+  // Tacview's ReferenceLatitude/Longitude is the DCS theater origin (x=0, z=0),
+  // possibly rounded. Origins: Caucasus 45.1/34.3, Sinai 30.0/31.2,
+  // Syria 35.0/35.9, PersianGulf 26.2/56.2, Iraq 33.3/44.2, Marianas 13.5/144.8,
+  // Falklands -52.5/-59.2, Normandy 49.5/-0.3, TheChannel 50.9/1.6,
+  // Nevada 39.8/-114.7, Kola 68.0/22.5, Afghanistan 33.9/66.2, GermanyCW 54.7/20.5
   let dcsMap: DCSMap | null = null;
-    console.log(refLat, refLng);
-  if (refLat >= 38 && refLat <= 48 && refLng >= 26 && refLng <= 48) {
+  const lat = Number(refLat);
+  const lng = Number(refLng);
+  if (lat >= 38 && lat <= 48 && lng >= 26 && lng <= 48) {
     dcsMap = Caucasus;
-  } else if (refLat >= 25 && refLat < 34 && refLng >= 27 && refLng <= 37) {
+  } else if (lat >= 25 && lat < 34 && lng >= 27 && lng <= 37) {
     dcsMap = Sinai;
-  } else if (refLat >= 28 && refLat < 38 && refLng >= 27 && refLng <= 42) {
+  } else if (lat >= 28 && lat < 38 && lng >= 27 && lng <= 42) {
     dcsMap = Syria;
-  } else if (refLat >= 20 && refLat <= 33 && refLng >= 46 && refLng <= 64) {
+  } else if (lat >= 31 && lat <= 36 && lng > 42 && lng <= 46) {
+    dcsMap = Iraq;
+  } else if (lat >= 20 && lat <= 33 && lng >= 46 && lng <= 64) {
     dcsMap = PersianGulf;
-  } else if (refLat >= 7 && refLat <= 23 && refLng >= 136 && refLng <= 153) {
+  } else if (lat >= 7 && lat <= 23 && lng >= 136 && lng <= 153) {
     dcsMap = Marianas;
-  } else if (refLat >= -59 && refLat <= -45 && refLng >= -88 && refLng <= -38) {
+  } else if (lat >= -59 && lat <= -45 && lng >= -88 && lng <= -38) {
     dcsMap = Falklands;
-  } else if (refLat >= 48 && refLat <= 52 && refLng >= -4 && refLng <= 4) {
+  } else if (lat >= 50 && lat <= 52 && lng >= 1 && lng <= 4) {
+    dcsMap = TheChannel;
+  } else if (lat >= 48 && lat <= 52 && lng >= -4 && lng <= 4) {
     dcsMap = Normandy;
-  } else if (refLat >= 32 && refLat <= 40 && refLng >= -122 && refLng <= -112) {
+  } else if (lat >= 32 && lat <= 40 && lng >= -122 && lng <= -112) {
     dcsMap = Nevada;
-  } else if (refLat >= 62 && refLat <= 73 && refLng >= -4 && refLng <= 40) {
-	dcsMap = Kola;
-  } else if (refLat >= 28 && refLat <= 39 && refLng >= 60 && refLng <= 74) {
-	dcsMap = Afghanistan;
+  } else if (lat >= 62 && lat <= 73 && lng >= -4 && lng <= 40) {
+    dcsMap = Kola;
+  } else if (lat >= 28 && lat <= 39 && lng >= 60 && lng <= 74) {
+    dcsMap = Afghanistan;
+  } else if (lat >= 52 && lat <= 57 && lng >= 17 && lng <= 24) {
+    dcsMap = GermanyCW;
   } else {
     console.log(refLat, refLng);
     return (
@@ -179,7 +203,7 @@ function App() {
               params: { serverName },
             },
           }) => {
-            return <ServerContainer serverName={serverName} />;
+            return <ServerContainer serverName={decodeServerName(serverName)} />;
           }}
         />
       </Switch>
