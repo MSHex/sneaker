@@ -288,7 +288,7 @@ func (s *serverSession) run() {
 
 func (s *serverSession) runTacViewClient() error {
 	client := NewTacViewClient(s.server.Hostname, s.server.Port, s.server.Password, "sneaker")
-	header, timeFrameStream, closeConn, streamErr, err := client.Start()
+	header, timeFrameStream, closeConn, streamErr, err := client.Start(func() { s.setTacViewStatus(true, "") })
 	if err != nil {
 		return err
 	}

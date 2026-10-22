@@ -62,7 +62,7 @@ func normalizeDialHost(host string) string {
 // time frames, and a function that closes the connection. The channel is
 // closed when the connection ends; the reason is available via the returned
 // error pointer once the channel has been drained.
-func (c *TacViewClient) Start() (*tacview.Header, <-chan *tacview.TimeFrame, func(), *error, error) {
+func (c *TacViewClient) Start(onConnected func()) (*tacview.Header, <-chan *tacview.TimeFrame, func(), *error, error) {
 	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 
 	conn, reader, err := c.handshake(addr, hashPassword64)
@@ -79,19 +79,19 @@ func (c *TacViewClient) Start() (*tacview.Header, <-chan *tacview.TimeFrame, fun
 		return nil, nil, nil, nil, err
 	}
 
-	acmi := newACMIReader(reader)
+	if onConnected != nil {
+		onConnected()
+	}
 
-	// The ACMI header and the initial time frame should arrive immediately.
-	conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	// No read deadline from here on. Tacview may hold the stream back for a
+	// long time (tacviewPlaybackDelay, a paused or empty server, mission
+	// still loading); TCP keep-alive detects a dead peer instead.
+	acmi := newACMIReader(reader)
 	header, err := acmi.readHeader()
 	if err != nil {
 		conn.Close()
 		return nil, nil, nil, nil, fmt.Errorf("failed to read ACMI header: %w", err)
 	}
-	// After the header there are no read deadlines: a paused DCS server can
-	// legitimately send nothing for a long time. TCP keep-alive detects a
-	// dead peer instead.
-	conn.SetReadDeadline(time.Time{})
 
 	frames := make(chan *tacview.TimeFrame, 64)
 	var streamErr error

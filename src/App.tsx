@@ -122,7 +122,9 @@ function WaitingForTacView({ serverName }: { serverName: string }) {
       <div>Waiting for Tacview data{status ? ` from ${status.target}` : ""}...</div>
       {status && status.connected && (
         <div className="text-sm text-gray-400">
-          Connected, waiting for the mission data.
+          Connected to Tacview, waiting for it to start sending data. If this
+          persists, check the server's tacviewPlaybackDelay (Tacview holds the
+          stream back by that many seconds) and that a mission is running.
         </div>
       )}
       {status && !status.connected && status.error && (
