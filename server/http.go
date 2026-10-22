@@ -39,6 +39,8 @@ func (h *httpServer) getServerMetadata(server *TacViewServerConfig) serverMetada
 	session, err := h.getOrCreateSession(server.Name)
 	if err == nil {
 		result.Players = session.GetPlayerList()
+		status := session.GetTacViewStatus()
+		result.TacView = &status
 	}
 
 	if h.discord != nil {
@@ -72,6 +74,7 @@ type serverMetadata struct {
 	GroundUnitModes []string         `json:"ground_unit_modes"`
 	Players         []PlayerMetadata `json:"players"`
 	GCIs            []gciMetadata    `json:"gcis"`
+	TacView         *TacViewStatus   `json:"tacview,omitempty"`
 }
 
 func getGroundUnitModes(config *TacViewServerConfig) []string {

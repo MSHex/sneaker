@@ -87,6 +87,53 @@ function ServerConnectModal() {
   );
 }
 
+type TacViewStatus = {
+  connected: boolean;
+  target: string;
+  error?: string;
+};
+
+// Shown until the first Tacview data arrives, with the reason it has not
+// (polled from the server), instead of an endless spinner.
+function WaitingForTacView({ serverName }: { serverName: string }) {
+  const [status, setStatus] = React.useState<TacViewStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      fetch(route(`/servers/${encodeURIComponent(serverName)}`))
+        .then((res) => res.json())
+        .then((data) => {
+          if (!cancelled) setStatus(data.tacview || null);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [serverName]);
+
+  return (
+    <div className="flex flex-col items-center gap-2 my-auto mx-auto text-gray-200 p-4 text-center">
+      <BiLoader className="h-6 w-6 text-blue-400 animate-spin" />
+      <div>Waiting for Tacview data{status ? ` from ${status.target}` : ""}...</div>
+      {status && status.connected && (
+        <div className="text-sm text-gray-400">
+          Connected, waiting for the mission data.
+        </div>
+      )}
+      {status && !status.connected && status.error && (
+        <div className="text-sm text-red-300 max-w-xl break-words">
+          {status.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // DCS server names often contain "#", "|" or spaces, so they are
 // percent-encoded in URLs.
 function decodeServerName(name: string): string {
@@ -137,10 +184,14 @@ function ServerContainer({ serverName }: { serverName: string }) {
     );
   }
 
-  if (loading || refLat === undefined || refLng === undefined) {
+  if (loading) {
     return (
       <BiLoader className="h-6 w-6 text-blue-400 animate-spin my-auto mx-auto" />
     );
+  }
+
+  if (refLat === undefined || refLng === undefined) {
+    return <WaitingForTacView serverName={serverName} />;
   }
 
   // Tacview's ReferenceLatitude/Longitude is the DCS theater origin (x=0, z=0),

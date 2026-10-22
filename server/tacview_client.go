@@ -66,7 +66,9 @@ func (c *TacViewClient) Start() (*tacview.Header, <-chan *tacview.TimeFrame, fun
 	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 
 	conn, reader, err := c.handshake(addr, hashPassword64)
-	if err == io.EOF && c.password != "" {
+	if err == io.EOF && c.password == "" {
+		err = errors.New("Tacview closed the connection during the handshake: a real-time telemetry password is probably set in Tacview's options; add it as \"password\" for this server in sneaker.json")
+	} else if err == io.EOF && c.password != "" {
 		// Older Tacview versions hash the password with CRC32
 		conn, reader, err = c.handshake(addr, hashPassword32)
 		if err == io.EOF {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -29,6 +30,37 @@ type serverSession struct {
 	subscriberIdx int
 	subscribers   map[int]chan<- []byte
 	state         sessionState
+
+	// Tacview connection status, guarded by the session mutex
+	tacviewConnected bool
+	tacviewError     string
+}
+
+type TacViewStatus struct {
+	Connected bool   `json:"connected"`
+	Target    string `json:"target"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *serverSession) GetTacViewStatus() TacViewStatus {
+	s.Lock()
+	defer s.Unlock()
+	port := s.server.Port
+	if port == 0 {
+		port = defaultTacViewPort
+	}
+	return TacViewStatus{
+		Connected: s.tacviewConnected,
+		Target:    fmt.Sprintf("%v:%v", normalizeDialHost(s.server.Hostname), port),
+		Error:     s.tacviewError,
+	}
+}
+
+func (s *serverSession) setTacViewStatus(connected bool, errMsg string) {
+	s.Lock()
+	s.tacviewConnected = connected
+	s.tacviewError = errMsg
+	s.Unlock()
 }
 
 func newServerSession(server *TacViewServerConfig) (*serverSession, error) {
@@ -227,6 +259,12 @@ func (s *serverSession) run() {
 		}
 
 		if err != nil {
+			s.setTacViewStatus(false, err.Error())
+		} else {
+			s.setTacViewStatus(false, "Tacview stream ended, reconnecting")
+		}
+
+		if err != nil {
 			// DCS being down between missions is normal; only log when the
 			// reason changes so the DCSServerBot console is not flooded.
 			if msg := err.Error(); msg != lastError {
@@ -261,6 +299,7 @@ func (s *serverSession) runTacViewClient() error {
 		return err
 	}
 
+	s.setTacViewStatus(true, "")
 	log.Printf("[session:%v] tacview client session initialized (%v objects)", s.server.Name, len(objects))
 
 	s.state.RLock()
