@@ -12,10 +12,39 @@ A live example of Sneaker can be viewed [here](https://sneaker.precontact.net/).
 
 ## Installation
 
-1. Download the latest released version [from here](https://github.com/Special-K-s-Flightsim-Bots/sneaker/releases/latest).
+1. Download the latest released version [from here](https://github.com/MSHex/sneaker/releases/latest) (`sneaker-windows-amd64-v<version>.exe`).
 2. Create a configuration file based off the [example](/example.config.json), replacing the required information (and optionally adding multiple servers to the array)
 3. Run the executable with the configuration path: `sneaker.exe --config config.json`
 4. Browse to http://localhost:7788 to access Sneaker GCI. To make the website available over the network, specify the bind parameter like so: `sneaker.exe --config config.json --bind 0.0.0.0:7788`
+
+### DCSServerBot
+
+Sneaker works with DCSServerBot's built-in `Sneaker` extension. DCSServerBot writes `config/sneaker.json` and starts / restarts Sneaker with `--bind` and `--config`; this fork is a drop-in replacement for the executable.
+
+```yaml
+# config/nodes.yaml
+MyNode:
+  extensions:
+    Sneaker:
+      cmd: '%USERPROFILE%\Documents\sneaker\sneaker-windows-amd64-v0.1.0.exe'
+      bind: 0.0.0.0:8080
+      # do NOT set "autoupdate: true" for Sneaker - DCSServerBot would replace
+      # this build with the Special K release.
+  instances:
+    DCS.dcs_serverrelease:
+      extensions:
+        Sneaker:
+          enabled: true
+          debug: true   # show Sneaker's log in the DCSServerBot console
+```
+
+Notes:
+
+- Tacview must be enabled for the instance (DCSServerBot's `Tacview` extension). Sneaker connects to the instance's `tacviewRealTimeTelemetryPort`.
+- A `listen_address` of `0.0.0.0` in `nodes.yaml` is fine: Sneaker dials loopback for wildcard addresses.
+- Real-time telemetry passwords are supported. DCSServerBot does not copy the password into `config/sneaker.json`, but it keeps existing entries, so add `"password": "<tacviewRealTimeTelemetryPassword>"` to the server's entry in `config/sneaker.json` once.
+- Server names may contain any characters (`#`, `|`, spaces, ...).
+- Missions can be restarted or changed freely: Sneaker reconnects, clears stale tracks and resumes the radar picture automatically.
 
 ### Discord Integration
 

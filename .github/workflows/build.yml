@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build web UI
+        run: |
+          yarn install --frozen-lockfile
+          yarn build
+
+      - name: Test server
+        run: go test ./server/...
+
+      - name: Build sneaker.exe
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || VERSION="dev-${GITHUB_SHA::7}"
+          go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+          (cd cmd/sneaker-server && go generate)
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
+            -o "sneaker-windows-amd64-v${VERSION}.exe" ./cmd/sneaker-server
+          echo "EXE=sneaker-windows-amd64-v${VERSION}.exe" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sneaker-windows-amd64
+          path: ${{ env.EXE }}
+
+      # The asset name matches what DCSServerBot's Sneaker extension expects
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.EXE }}

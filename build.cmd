@@ -1,5 +1,6 @@
 @echo off
-set GOARCH=386
+set GOOS=windows
+set GOARCH=amd64
 
 echo Cleaning up...
 del sneaker.exe 2>NUL
